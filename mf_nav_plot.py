@@ -1,16 +1,47 @@
-# === Streamlit AMFI NAV Dashboard ===
 import streamlit as st
-import pandas as pd
 import requests
+import pandas as pd
 from datetime import datetime, timedelta
+from pytz import utc
 from ta.trend import SMAIndicator, MACD
 from ta.momentum import RSIIndicator
-from pytz import utc
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+# === Dark Mode ===
+dark_mode = st.toggle("🌙 Dark Mode", value=True)
+if dark_mode:
+    st.markdown("""
+        <style>
+            body {
+                background-color: #0e1117;
+                color: white;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+
+# === Login ===
+def login():
+    st.title("🔐 Login")
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+    if st.button("Login"):
+        if username == "aditya" and password == "1234":
+            st.success("✅ Logged in successfully")
+            return True
+        else:
+            st.error("❌ Invalid credentials")
+    if st.button("Forgot Password?"):
+        st.info("🔐 Contact admin or reset via backend")
+    return False
+
+if not login():
+    st.stop()
+
 # === Helper Functions ===
 def convert_date_to_utc_datetime(date_string):
     return datetime.strptime(date_string, "%d-%b-%Y").replace(tzinfo=utc)
+
 def split_date_range(start_date_str, end_date_str, max_duration=90):
     start_date = datetime.strptime(start_date_str, "%d-%b-%Y")
     end_date = datetime.strptime(end_date_str, "%d-%b-%Y")
@@ -21,9 +52,13 @@ def split_date_range(start_date_str, end_date_str, max_duration=90):
         ranges.append((current, chunk_end))
         current = chunk_end + timedelta(days=1)
     return ranges
+
 def fetch_amfi_data(start_date_str, end_date_str):
     nav_list = []
-    for start, end in split_date_range(start_date_str, end_date_str):
+    ranges = split_date_range(start_date_str, end_date_str)
+    progress = st.progress(0)
+
+    for i, (start, end) in enumerate(ranges):
         url = f"https://portal.amfiindia.com/DownloadNAVHistoryReport_Po.aspx?&frmdt={start.strftime('%d-%b-%Y')}&todt={end.strftime('%d-%b-%Y')}"
         response = requests.get(url)
         lines = response.text.split('\r\n')
@@ -70,59 +105,62 @@ def fetch_amfi_data(start_date_str, end_date_str):
                 except:
                     pass
             j += 1
+        progress.progress((i + 1) / len(ranges))
     return pd.DataFrame(nav_list)
+
 # === UI ===
-st.title("📊 AMFI Mutual Fund NAV Dashboard")
-st.markdown("Created using **Streamlit** | Data Source: [AMFI India](https://portal.amfiindia.com/)")
-with st.sidebar:
-    start_date = st.date_input("Fetch From Date", datetime(2025, 4, 1))
-    end_date = st.date_input("Fetch To Date", datetime(2025, 6, 30))
-    if st.button("📥 Fetch Data"):
-        with st.spinner("Fetching data from AMFI..."):
-            df_nav = fetch_amfi_data(start_date.strftime('%d-%b-%Y'), end_date.strftime('%d-%b-%Y'))
-            if df_nav.empty:
-                st.error("❌ No data returned from AMFI.")
-            else:
-                st.session_state["df_nav"] = df_nav
-                st.success(f"✅ Loaded {len(df_nav)} records.")
-# === Main View ===
-if "df_nav" in st.session_state:
-    df_nav = st.session_state["df_nav"]
-    selected_amc = st.selectbox("Select AMC", sorted(df_nav["AMC"].dropna().unique()))
-    schemes = df_nav[df_nav["AMC"] == selected_amc]["Name"].unique()
-    selected_scheme = st.selectbox("Select Scheme", schemes)
-    filtered_df = df_nav[df_nav["Name"] == selected_scheme].copy()
-    min_date, max_date = filtered_df["Date"].min().date(), filtered_df["Date"].max().date()
-    col1, col2 = st.columns(2)
-    with col1:
-        f_date = st.date_input("From Date", min_date)
-    with col2:
-        t_date = st.date_input("To Date", max_date)
-    filtered_df = filtered_df[
-        (filtered_df["Date"].dt.date >= f_date) & (filtered_df["Date"].dt.date <= t_date)
-    ].copy()
-    sma1 = st.number_input("SMA 1", min_value=1, value=50)
-    sma2 = st.number_input("SMA 2", min_value=1, value=100)
-    sma3 = st.number_input("SMA 3", min_value=1, value=200)
-    # Add Indicators
-    filtered_df["RSI_14"] = RSIIndicator(close=filtered_df["NAV"], window=14).rsi()
-    macd = MACD(close=filtered_df["NAV"], window_slow=26, window_fast=12, window_sign=9)
-    filtered_df["MACD"] = macd.macd()
-    filtered_df["Signal"] = macd.macd_signal()
-    filtered_df[f"SMA_{sma1}"] = SMAIndicator(filtered_df["NAV"], sma1).sma_indicator()
-    filtered_df[f"SMA_{sma2}"] = SMAIndicator(filtered_df["NAV"], sma2).sma_indicator()
-    filtered_df[f"SMA_{sma3}"] = SMAIndicator(filtered_df["NAV"], sma3).sma_indicator()
-    # Plot
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.04,
-                        subplot_titles=["NAV & SMAs", "RSI (14)", "MACD"])
-    fig.add_trace(go.Scatter(x=filtered_df["Date"], y=filtered_df["NAV"], name="NAV", line=dict(color="cyan")), row=1, col=1)
-    fig.add_trace(go.Scatter(x=filtered_df["Date"], y=filtered_df[f"SMA_{sma1}"], name=f"SMA {sma1}", line=dict(dash="dot")), row=1, col=1)
-    fig.add_trace(go.Scatter(x=filtered_df["Date"], y=filtered_df[f"SMA_{sma2}"], name=f"SMA {sma2}", line=dict(dash="dot")), row=1, col=1)
-    fig.add_trace(go.Scatter(x=filtered_df["Date"], y=filtered_df[f"SMA_{sma3}"], name=f"SMA {sma3}", line=dict(dash="dot")), row=1, col=1)
-    fig.add_trace(go.Scatter(x=filtered_df["Date"], y=filtered_df["RSI_14"], name="RSI", line=dict(color="violet")), row=2, col=1)
-    fig.add_shape(type="line", x0=min_date, x1=max_date, y0=70, y1=70, line=dict(dash="dot", color="red"), row=2, col=1)
-    fig.add_shape(type="line", x0=min_date, x1=max_date, y0=30, y1=30, line=dict(dash="dot", color="green"), row=2, col=1)
-    fig.add_trace(go.Scatter(x=filtered_df["Date"], y=filtered_df["MACD"], name="MACD", line=dict(color="aqua")), row=3, col=1)
-    fig.add_trace(go.Scatter(x=filtered_df["Date"], y=filtered_df["Signal"], name="Signal", line=dict(dash="dot", color="white")), row=3, col=1)
-    fig.update_layout(height=900, title=f"{selected_scheme} - NAV Chart", template="plotly_dark")
-    st.plotly_chart(fig, use_container_width=True)
+st.title("📊 MF Data Extractor Dashboard")
+fetch_col1, fetch_col2 = st.columns(2)
+fetch_from_date = fetch_col1.date_input("Fetch From", datetime(2025, 4, 1))
+fetch_to_date = fetch_col2.date_input("Fetch To", datetime(2025, 6, 30))
+
+if st.button("📥 Fetch Data"):
+    if fetch_from_date and fetch_to_date:
+        start_str = fetch_from_date.strftime('%d-%b-%Y')
+        end_str = fetch_to_date.strftime('%d-%b-%Y')
+        st.write(f"Fetching data from **{start_str}** to **{end_str}**")
+        df_nav = fetch_amfi_data(start_str, end_str)
+        st.session_state.df_nav = df_nav
+    else:
+        st.warning("⚠️ Please select both from and to dates.")
+
+if 'df_nav' in st.session_state:
+    df_nav = st.session_state.df_nav
+    selected_amc = st.selectbox("AMC", sorted(df_nav['AMC'].dropna().unique()))
+    selected_scheme = st.selectbox("Scheme", sorted(df_nav[df_nav['AMC'] == selected_amc]['Name'].unique()))
+    filtered_df = df_nav[df_nav['Name'] == selected_scheme]
+
+    if not filtered_df.empty:
+        from_date = st.date_input("From Date", filtered_df['Date'].min().to_pydatetime())
+        to_date = st.date_input("To Date", filtered_df['Date'].max().to_pydatetime())
+
+        sma1 = st.number_input("SMA 1", value=50)
+        sma2 = st.number_input("SMA 2", value=100)
+        sma3 = st.number_input("SMA 3", value=200)
+
+        if st.button("📊 Plot Chart"):
+            df = filtered_df[(filtered_df['Date'] >= pd.to_datetime(from_date)) & (filtered_df['Date'] <= pd.to_datetime(to_date))]
+            df['RSI_14'] = RSIIndicator(close=df['NAV'], window=14).rsi()
+            macd = MACD(close=df['NAV'], window_slow=26, window_fast=12, window_sign=9)
+            df['MACD'] = macd.macd()
+            df['MACD_Signal'] = macd.macd_signal()
+
+            sma_cols = []
+            for period in [sma1, sma2, sma3]:
+                if period > 1:
+                    col = f"SMA_{period}"
+                    df[col] = SMAIndicator(close=df['NAV'], window=period).sma_indicator()
+                    sma_cols.append(col)
+
+            fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05,
+                                subplot_titles=["NAV + SMAs", "RSI (14)", "MACD"])
+            fig.add_trace(go.Scatter(x=df['Date'], y=df['NAV'], name="NAV", line=dict(color="cyan")), row=1, col=1)
+            for col in sma_cols:
+                fig.add_trace(go.Scatter(x=df['Date'], y=df[col], name=col, line=dict(dash='dot')), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df['Date'], y=df['RSI_14'], name="RSI", line=dict(color="violet")), row=2, col=1)
+            fig.add_shape(type='line', x0=df['Date'].min(), x1=df['Date'].max(), y0=70, y1=70, line=dict(dash="dot", color="red"), row=2, col=1)
+            fig.add_shape(type='line', x0=df['Date'].min(), x1=df['Date'].max(), y0=30, y1=30, line=dict(dash="dot", color="green"), row=2, col=1)
+            fig.add_trace(go.Scatter(x=df['Date'], y=df['MACD'], name="MACD", line=dict(color="aqua")), row=3, col=1)
+            fig.add_trace(go.Scatter(x=df['Date'], y=df['MACD_Signal'], name="Signal", line=dict(dash='dot', color="white")), row=3, col=1)
+            fig.update_layout(title=f"{selected_scheme} NAV Chart", template="plotly_dark" if dark_mode else "plotly_white", height=900)
+            st.plotly_chart(fig, use_container_width=True)
